@@ -1,0 +1,43 @@
+name: Autonomous 24/7 Cloud Harvester (Unlimited Public Runner)
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+    inputs:
+      lead_count:
+        description: 'Target leads to harvest'
+        required: false
+        default: '500'
+
+concurrency:
+  group: fzcore-unlimited-harvest
+  cancel-in-progress: false
+
+jobs:
+  harvest-vault:
+    name: 24/7 Deep Google Maps Harvester
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Scraper Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Playwright & Dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run Infinite Harvester & Vault Sync
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          python outbound_engine/deep_rank_harvester.py 500
