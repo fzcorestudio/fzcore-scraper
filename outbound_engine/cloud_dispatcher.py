@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-FZCORE STUDIO - Autonomous Cloud SMTP Dispatcher
+FZCORE STUDIO - Autonomous Cloud SMTP Dispatcher & Follow-Up Engine
 Runs 100% on GitHub Actions Cloud Runners (Zero PC Dependency).
 Connects to Hostinger SMTP SSL (Port 465) across 48 quarantined mailboxes.
-Pacing: 18-35s humanized anti-spam jitter.
+Pacing: 14-24s humanized anti-spam jitter across 48 round-robin mailboxes.
+Includes Day +3 Follow-Up Bumps for maximal reply conversion.
 """
 
 import os
@@ -35,7 +36,7 @@ SMTP_HOST = "smtp.hostinger.com"
 SMTP_PORT = 465
 
 TZ_MAP = {
-    # Eastern (UTC-4 / UTC-5)
+    # Eastern (UTC-5)
     'FL': -5, 'GA': -5, 'NY': -5, 'NC': -5, 'SC': -5, 'VA': -5,
     'PA': -5, 'OH': -5, 'MI': -5, 'NJ': -5, 'MA': -5, 'MD': -5,
     'DC': -5, 'CT': -5, 'DE': -5, 'ON': -5, 'QC': -5,
@@ -50,18 +51,18 @@ TZ_MAP = {
 }
 
 def is_golden_window(state_str):
-    offset = TZ_MAP.get(str(state_str).upper().strip(), -5) # Default Eastern
+    offset = TZ_MAP.get(str(state_str).upper().strip(), -5)
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     local_hour = (utc_now.hour + offset) % 24
     local_min = utc_now.minute
-    # Contractor active window: 7:15 AM to 5:45 PM local
     time_float = local_hour + (local_min / 60.0)
-    return 7.25 <= time_float <= 17.75
+    # 7:15 AM to 6:00 PM local
+    return 7.25 <= time_float <= 18.00
 
 def run_cloud_dispatch(batch_size=50, is_surge=False):
     print("=" * 75)
-    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}] FZCORE Autonomous Cloud SMTP Dispatcher")
-    print(f"Batch Size: {batch_size} | Mode: {'SURGE (All Timezones)' if is_surge else 'Daylight Golden Window'}")
+    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %I:%M:%S %p')}] FZCORE Autonomous Cloud SMTP Dispatcher & Follow-Up Engine")
+    print(f"Batch Target: {batch_size} | Mode: {'SURGE (All Timezones)' if is_surge else 'Daylight Golden Window'}")
     print("=" * 75)
 
     if not FTP_PASS or not SUBDOMAIN_MAIL_PASS:
@@ -93,6 +94,10 @@ def run_cloud_dispatch(batch_size=50, is_surge=False):
     suppression_raw = read_ftp_json("/domains/fzcorestudio.com/outbound_engine/suppression_list.json")
     mailboxes = read_ftp_json("/domains/fzcorestudio.com/outbound_engine/mailboxes.json")
 
+    # Close initial FTP connection immediately so it doesn't timeout during sending
+    ftp.quit()
+    print("[+] Vault & ledgers loaded. FTP socket closed safely to prevent timeouts.")
+
     suppressed = set()
     if isinstance(suppression_raw, dict):
         suppressed = {k.lower().strip() for k in suppression_raw.keys()}
@@ -100,17 +105,46 @@ def run_cloud_dispatch(batch_size=50, is_surge=False):
         suppressed = {str(k).lower().strip() for k in suppression_raw}
 
     sent_emails = set()
+    initial_threads = {}
+    followup_sent = set()
+
     for k, v in sent_ledger.items():
         if isinstance(v, dict):
-            em = v.get("email") or v.get("recipient_email")
+            em = str(v.get("email") or v.get("recipient_email") or "").lower().strip()
             if em:
-                sent_emails.add(str(em).lower().strip())
+                sent_emails.add(em)
+                subj = str(v.get("subject", "")).lower()
+                if subj.startswith("re:") or v.get("type") == "followup_1":
+                    followup_sent.add(em)
+                elif em not in initial_threads:
+                    initial_threads[em] = {
+                        "lead_id": k,
+                        "data": v,
+                        "sent_at": v.get("sent_at", "")
+                    }
 
     print(f"[+] Vault Loaded: {len(approved_pitches)} pitches | Sent Ledger: {len(sent_ledger)} | Suppressed: {len(suppressed)}")
     print(f"[+] Mailbox Pool: {len(mailboxes)} active Hostinger mailboxes")
 
-    # Filter uncontacted
-    pending = []
+    # 2. Identify Due Day +3 Follow-Up Bumps
+    due_followups = []
+    now_dt = datetime.datetime.now()
+    for em, t_info in initial_threads.items():
+        if em in followup_sent or em in suppressed:
+            continue
+        sent_str = t_info.get("sent_at", "")
+        try:
+            sent_dt = datetime.datetime.strptime(sent_str[:10], "%Y-%m-%d")
+            diff_days = (now_dt - sent_dt).days
+            if diff_days >= 3:
+                due_followups.append((em, t_info))
+        except Exception:
+            pass
+
+    print(f"[+] Due Day +3 Follow-Up Bumps Ready: {len(due_followups)}")
+
+    # 3. Filter uncontacted fresh pitches
+    pending_fresh = []
     for item in approved_pitches:
         em = (item.get("recipient_email") or item.get("email") or "").strip().lower()
         if not em or "@" not in em:
@@ -121,23 +155,33 @@ def run_cloud_dispatch(batch_size=50, is_surge=False):
         state = item.get("state") or "US"
         if not is_surge and not is_golden_window(state):
             continue
-        pending.append(item)
+        pending_fresh.append(item)
 
-    print(f"[+] Pending Deliverable Pitches (In Golden Window): {len(pending)}")
-    if not pending:
-        print("[*] Zero pitches pending in active timezone window right now. Exiting gracefully.")
-        ftp.quit()
+    print(f"[+] Pending Deliverable Fresh Pitches: {len(pending_fresh)}")
+
+    # 4. Construct Balanced Batch (e.g., 20% Follow-ups + 80% Fresh Pitches)
+    batch_items = []
+    max_fu = min(12, len(due_followups))
+    for em, t_info in due_followups[:max_fu]:
+        batch_items.append({"type": "FOLLOWUP", "email": em, "info": t_info})
+
+    remaining_slots = batch_size - len(batch_items)
+    random.shuffle(pending_fresh)
+    for p in pending_fresh[:remaining_slots]:
+        batch_items.append({"type": "FRESH", "pitch": p})
+
+    if not batch_items:
+        print("[*] Zero emails pending in active timezone window. Exiting gracefully.")
         return
 
-    random.shuffle(pending)
-    selected_batch = pending[:batch_size]
-    print(f"[*] Dispatching batch of {len(selected_batch)} emails across {len(mailboxes)} mailboxes...\n")
+    random.shuffle(batch_items)
+    print(f"\n[*] Dispatching batch of {len(batch_items)} emails ({len(due_followups[:max_fu])} follow-ups, {len(batch_items) - len(due_followups[:max_fu])} fresh pitches)...")
 
     dispatched_count = 0
     ssl_context = ssl.create_default_context()
     box_idx = random.randint(0, len(mailboxes) - 1)
 
-    for idx, pitch in enumerate(selected_batch):
+    for idx, item in enumerate(batch_items):
         box = mailboxes[box_idx % len(mailboxes)]
         box_idx += 1
 
@@ -145,62 +189,94 @@ def run_cloud_dispatch(batch_size=50, is_surge=False):
         sender_name = box.get("name", "Faiz")
         subdomain = sender_email.split("@")[1]
 
-        recipient_email = pitch["recipient_email"]
-        recipient_name = pitch.get("recipient_name", "Business Owner")
-        biz_name = pitch.get("business_name", "Contractor")
-        subject = pitch.get("subject", f"Quick question regarding {biz_name}")
-        body_text = pitch.get("body", "")
+        if item["type"] == "FOLLOWUP":
+            rec_email = item["email"]
+            t_data = item["info"]["data"]
+            orig_subj = t_data.get("subject", "projects")
+            clean_subj = orig_subj if orig_subj.lower().startswith("re:") else f"re: {orig_subj}"
+            orig_msg_id = t_data.get("message_id")
+            biz_name = t_data.get("business_name") or t_data.get("business", "your business")
+
+            subject = clean_subj
+            first_name = "there"
+            body_text = f"Quick follow-up here, did you get a chance to see my note or is this week too packed with jobs?\n\nFaiz\nfzcorestudio.com"
+            is_followup = True
+        else:
+            p = item["pitch"]
+            rec_email = p["recipient_email"]
+            biz_name = p.get("business_name", "Contractor")
+            subject = p.get("subject", f"Quick question regarding {biz_name}")
+            body_text = p.get("body", "")
+            orig_msg_id = None
+            is_followup = False
 
         msg = MIMEMultipart("alternative")
         msg["From"] = f"{sender_name} <{sender_email}>"
-        msg["To"] = f"{recipient_name} <{recipient_email}>"
+        msg["To"] = f"<{rec_email}>"
         msg["Reply-To"] = "Faiz Majeed <faiz@fzcorestudio.com>"
         msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
-        msg["Message-ID"] = make_msgid(domain=subdomain)
+        new_msg_id = make_msgid(domain=subdomain)
+        msg["Message-ID"] = new_msg_id
 
-        # Plain & Clean HTML
+        if is_followup and orig_msg_id:
+            msg["In-Reply-To"] = orig_msg_id
+            msg["References"] = orig_msg_id
+
         paras = "".join(f'<p style="margin: 0 0 14px 0; font-size: 14px; line-height: 1.55; color: #111827;">{p.replace(chr(10), "<br>")}</p>' for p in body_text.split("\n\n"))
         body_html = f"""<!DOCTYPE html><html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 14px; color: #111827;">{paras}</body></html>"""
 
         msg.attach(MIMEText(body_text, "plain", "utf-8"))
         msg.attach(MIMEText(body_html, "html", "utf-8"))
 
-        print(f"[{idx+1}/{len(selected_batch)}] Sending from {sender_email} -> {recipient_email} ({biz_name})...")
+        pfx = "[FOLLOW-UP]" if is_followup else "[FRESH PITCH]"
+        print(f"[{idx+1}/{len(batch_items)}] {pfx} From {sender_email} -> {rec_email} ({biz_name})...")
 
         try:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ssl_context, timeout=25) as server:
                 server.login(sender_email, SUBDOMAIN_MAIL_PASS)
-                server.sendmail(sender_email, [recipient_email], msg.as_string())
+                server.sendmail(sender_email, [rec_email], msg.as_string())
             
             dispatched_count += 1
-            lead_id = pitch.get("lead_id") or f"FZ-US-{int(time.time())}-{dispatched_count}"
-            sent_ledger[lead_id] = {
-                "email": recipient_email,
+            record_id = f"FZ-FU-{int(time.time())}-{dispatched_count}" if is_followup else (item["pitch"].get("lead_id") or f"FZ-US-{int(time.time())}-{dispatched_count}")
+            sent_ledger[record_id] = {
+                "email": rec_email,
                 "business_name": biz_name,
                 "sender": sender_email,
                 "subject": subject,
+                "message_id": new_msg_id,
                 "sent_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "DELIVERED"
+                "status": "DELIVERED",
+                "type": "followup_1" if is_followup else "initial_pitch"
             }
             print(f"   ✓ DELIVERED successfully via {sender_email}")
 
         except Exception as e:
             print(f"   [!] SMTP Delivery Error on {sender_email}: {e}")
 
-        # Humanized Anti-Spam Jitter (18 to 35 seconds)
-        if idx < len(selected_batch) - 1:
-            delay = random.uniform(18.0, 32.0)
+        # Humanized Anti-Spam Jitter (14 to 24 seconds)
+        if idx < len(batch_items) - 1:
+            delay = random.uniform(14.0, 24.0)
             print(f"   ⏳ Human Jitter Delay: {round(delay, 1)}s...")
             time.sleep(delay)
 
-    # 4. Upload updated ledger back to Hostinger FTP
-    print(f"\n[*] Uploading updated ledger ({len(sent_ledger)} entries) to Hostinger FTP...")
-    bio_up = io.BytesIO(json.dumps(sent_ledger, indent=2).encode('utf-8'))
-    ftp.storbinary("STOR /domains/fzcorestudio.com/outbound_engine/sent_ledger.json", bio_up)
-    ftp.quit()
+    # 5. Connect FRESH to Hostinger FTP & Upload Updated Ledger
+    print(f"\n[*] Connecting fresh to Hostinger FTP to persist ledger ({len(sent_ledger)} entries)...")
+    for attempt in range(3):
+        try:
+            up_ftp = ftplib.FTP(FTP_HOST, timeout=30)
+            up_ftp.login(FTP_USER, FTP_PASS)
+            up_ftp.set_pasv(True)
+            bio_up = io.BytesIO(json.dumps(sent_ledger, indent=2).encode('utf-8'))
+            up_ftp.storbinary("STOR /domains/fzcorestudio.com/outbound_engine/sent_ledger.json", bio_up)
+            up_ftp.quit()
+            print("✅ [SUCCESS] Sent ledger successfully synced to Hostinger FTP!")
+            break
+        except Exception as e:
+            print(f"[!] FTP sync attempt {attempt+1} failed: {e}")
+            time.sleep(3)
 
-    print(f"✅ [COMPLETE] Batch finished: {dispatched_count} emails delivered safely.")
+    print(f"\n🏆 [BATCH COMPLETE] {dispatched_count} emails delivered safely.")
     print("=" * 75)
 
 if __name__ == "__main__":

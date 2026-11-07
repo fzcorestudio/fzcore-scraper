@@ -2,8 +2,8 @@ name: Autonomous 24/7 Cloud Dispatcher (1,200 Daily Target)
 
 on:
   schedule:
-    # Runs every 30 minutes 24/7 on free unlimited public GitHub runners
-    - cron: '*/30 * * * *'
+    # Runs every 15 minutes continuously 24/7 on free unlimited public GitHub runners
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       batch_size:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   dispatch-pitches:
-    name: Safe Multi-Subdomain SMTP Dispatcher (Hostinger SSL)
+    name: Safe Multi-Subdomain SMTP Dispatcher & Follow-Up Engine
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run Cloud SMTP Dispatcher
+      - name: Run Cloud SMTP Dispatcher & Follow-Up Bumps
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
