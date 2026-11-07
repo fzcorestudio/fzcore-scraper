@@ -474,7 +474,7 @@ def run_deep_harvest(target_count=2000, output_file=None):
                 json.dump(all_harvested, f, indent=2, ensure_ascii=False)
 
             # Stream-Sync: Periodically refill Hostinger vault every 50 new leads in real-time
-            if new_leads_count > 0 and new_leads_count % 50 == 0:
+            if new_leads_count > 0 and new_leads_count % 20 == 0:
                 print(f"📦 [Stream-Sync] {new_leads_count} fresh leads reached. Refilling Hostinger vault in real-time...")
                 try:
                     from refill_hostinger_vault import refill_vault
@@ -501,3 +501,4 @@ def run_deep_harvest(target_count=2000, output_file=None):
 if __name__ == "__main__":
     count = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
     run_deep_harvest(target_count=count)
+

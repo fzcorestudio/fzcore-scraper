@@ -2,13 +2,13 @@ name: Autonomous 24/7 Cloud Harvester (Unlimited Public Runner)
 
 on:
   schedule:
-    - cron: '*/20 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       lead_count:
         description: 'Target leads to harvest'
         required: false
-        default: '500'
+        default: '10000'
 
 concurrency:
   group: fzcore-unlimited-harvest
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   harvest-vault:
-    name: 24/7 Deep Google Maps Harvester
+    name: 24/7 Deep Google Maps Harvester (Uncapped Lead Stream)
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -40,4 +40,5 @@ jobs:
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
-          python outbound_engine/deep_rank_harvester.py 500
+          LEAD_TARGET="${{ github.event.inputs.lead_count || '10000' }}"
+          python outbound_engine/deep_rank_harvester.py "$LEAD_TARGET"
