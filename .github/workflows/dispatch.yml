@@ -2,18 +2,13 @@ name: Autonomous 24/7 Cloud Dispatcher (1,200 Daily Target)
 
 on:
   schedule:
-    # Runs every 15 minutes continuously 24/7 on free unlimited public GitHub runners
-    - cron: '*/15 * * * *'
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
-      batch_size:
-        description: 'Emails to dispatch in this batch'
+      target_count:
+        description: 'Total daily target emails'
         required: false
-        default: '50'
-      surge:
-        description: 'Bypass timezone check (true/false)'
-        required: false
-        default: 'false'
+        default: '1200'
 
 concurrency:
   group: fzcore-cloud-dispatch
@@ -21,9 +16,9 @@ concurrency:
 
 jobs:
   dispatch-pitches:
-    name: Safe Multi-Subdomain SMTP Dispatcher & Follow-Up Engine
+    name: Dual-Worker Cloud SMTP Dispatcher (Hostinger SSL)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
 
     steps:
       - name: Checkout Scraper Repo
@@ -34,20 +29,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Run Cloud SMTP Dispatcher & Follow-Up Bumps
+      - name: Run Dual-Worker Cloud SMTP Dispatcher & Follow-Ups
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
           FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
           SUBDOMAIN_MAIL_PASS: ${{ secrets.SUBDOMAIN_MAIL_PASS }}
         run: |
-          BATCH="${{ github.event.inputs.batch_size || '50' }}"
-          SURGE="${{ github.event.inputs.surge || 'false' }}"
-          
-          CMD="python outbound_engine/cloud_dispatcher.py $BATCH"
-          if [ "$SURGE" = "true" ]; then
-            CMD="$CMD --surge"
-          fi
-          
-          echo "Executing: $CMD"
-          eval $CMD
+          TARGET="${{ github.event.inputs.target_count || '1200' }}"
+          echo "Starting Dual-Worker High-Velocity Dispatch Engine targeting $TARGET emails..."
+          python outbound_engine/cloud_dispatcher.py "$TARGET" --surge
