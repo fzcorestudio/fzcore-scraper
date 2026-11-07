@@ -1,0 +1,53 @@
+name: Autonomous 24/7 Cloud Dispatcher (1,200 Daily Target)
+
+on:
+  schedule:
+    # Runs every 30 minutes 24/7 on free unlimited public GitHub runners
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      batch_size:
+        description: 'Emails to dispatch in this batch'
+        required: false
+        default: '50'
+      surge:
+        description: 'Bypass timezone check (true/false)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: fzcore-cloud-dispatch
+  cancel-in-progress: false
+
+jobs:
+  dispatch-pitches:
+    name: Safe Multi-Subdomain SMTP Dispatcher (Hostinger SSL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Scraper Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Cloud SMTP Dispatcher
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          SUBDOMAIN_MAIL_PASS: ${{ secrets.SUBDOMAIN_MAIL_PASS }}
+        run: |
+          BATCH="${{ github.event.inputs.batch_size || '50' }}"
+          SURGE="${{ github.event.inputs.surge || 'false' }}"
+          
+          CMD="python outbound_engine/cloud_dispatcher.py $BATCH"
+          if [ "$SURGE" = "true" ]; then
+            CMD="$CMD --surge"
+          fi
+          
+          echo "Executing: $CMD"
+          eval $CMD
